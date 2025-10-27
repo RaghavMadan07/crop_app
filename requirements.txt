@@ -1,0 +1,12 @@
+streamlit 
+torch 
+torchvision 
+timm 
+albumentations==1.3.0 
+opencv-python-headless==4.7.0.72 
+scikit-learn 
+numpy 
+pandas 
+Pillow 
+matplotlib 
+tqdm 
