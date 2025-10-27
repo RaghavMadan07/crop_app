@@ -1,105 +1,97 @@
 import streamlit as st
 import torch
+import torch.nn.functional as F
 from torchvision import transforms
 from PIL import Image
-from model import MultiHeadResNet  # Make sure this is your CNN model file
+import io
 
-# ---------------------- CONFIG ----------------------
+# Import model architecture
+from model import MultiHeadResNet
+
+# -----------------------
+# ⚙️ Basic Streamlit Setup
+# -----------------------
+st.set_page_config(page_title="Crop Condition Classifier", layout="wide")
+st.title("🌾 CROPIC: Multi-Task Crop Health and Damage Detection")
+st.write("Upload a crop image to predict crop type, damage, growth stage, severity, and overall health.")
+
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-CKPT_PATH = "clean_model.pth"
-BACKBONE = "resnet50"  # ✅ define this
+MODEL_PATH = "clean_model.pth"
 
-st.set_page_config(page_title="Crop Condition Prediction", page_icon="🌾", layout="centered")
-st.title("🌾 Crop Condition Prediction App")
-st.write("Upload a crop image to predict its type, damage status, growth stage, severity, and health score.")
-
-# ---------------------- MODEL LOADER ----------------------
-
+# -----------------------
+# 🧠 Load Model
+# -----------------------
 @st.cache_resource
 def load_model():
-    BACKBONE = "resnet18"  # change if you used a different one
-    model = MultiHeadResNet(backbone_name=BACKBONE, pretrained=False).to(DEVICE)
+    model = MultiHeadResNet(backbone_name="resnet50", pretrained=False,
+                            num_crops=30, num_stages=3, num_severity=4)
+    state_dict = torch.load(MODEL_PATH, map_location=DEVICE)
 
-    ckpt = torch.load(CKPT_PATH, map_location=DEVICE)
+    # Handle mismatched keys safely
+    new_state_dict = {}
+    for k, v in state_dict.items():
+        if k.startswith("module."):
+            new_state_dict[k[7:]] = v
+        else:
+            new_state_dict[k] = v
 
-    new_state_dict = model.state_dict()
-
-    # ✅ Handle all possible checkpoint types
-    if isinstance(ckpt, dict):
-        # case 1: has "model_state"
-        if "model_state" in ckpt:
-            ckpt = ckpt["model_state"]
-
-        # case 2: keys start with "module."
-        if any(k.startswith("module.") for k in ckpt.keys()):
-            ckpt = {k.replace("module.", ""): v for k, v in ckpt.items()}
-
-        # case 3: keys start with "backbone."
-        if any(k.startswith("backbone.") for k in ckpt.keys()):
-            for k, v in ckpt.items():
-                if k in new_state_dict:
-                    new_state_dict[k] = v
-            model.load_state_dict(new_state_dict, strict=False)
-            print("✅ Loaded backbone weights only.")
-            model.eval()
-            return model
-
-        # case 4: direct match
-        try:
-            model.load_state_dict(ckpt, strict=False)
-            print("✅ Loaded checkpoint with partial match.")
-        except RuntimeError as e:
-            print(f"⚠️ Partial load error ignored: {e}")
-            for k, v in ckpt.items():
-                if k in new_state_dict and new_state_dict[k].shape == v.shape:
-                    new_state_dict[k] = v
-            model.load_state_dict(new_state_dict, strict=False)
-            print("✅ Loaded compatible weights only.")
-    else:
-        print("⚠️ Unexpected checkpoint type, loading skipped.")
-
+    model.load_state_dict(new_state_dict, strict=False)
+    model.to(DEVICE)
     model.eval()
     return model
 
-
-# ---------------------- LOAD MODEL ----------------------
 model = load_model()
 
-# ---------------------- IMAGE TRANSFORMS ----------------------
-transform = transforms.Compose([
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                         std=[0.229, 0.224, 0.225])
-])
-
-# ---------------------- FILE UPLOAD ----------------------
-uploaded_file = st.file_uploader("📤 Upload a crop image", type=["jpg", "jpeg", "png"])
-
+# -----------------------
+# 🖼️ Image Upload Section
+# -----------------------
+uploaded_file = st.file_uploader("Upload a crop image", type=["jpg", "jpeg", "png"])
 if uploaded_file is not None:
-    img = Image.open(uploaded_file).convert("RGB")
-    st.image(img, caption="Uploaded Image", use_container_width=True)
+    image = Image.open(uploaded_file).convert("RGB")
+    st.image(image, caption="Uploaded Image", use_container_width=True)
 
-    input_tensor = transform(img).unsqueeze(0).to(DEVICE)
+    # -----------------------
+    # 🔄 Preprocessing
+    # -----------------------
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406],
+                             [0.229, 0.224, 0.225])
+    ])
+    input_tensor = transform(image).unsqueeze(0).to(DEVICE)
 
-    with st.spinner("🔍 Analyzing image..."):
-        with torch.no_grad():
-            preds = model(input_tensor)
+    # -----------------------
+    # 🔍 Inference
+    # -----------------------
+    with torch.no_grad():
+        outputs = model(input_tensor)
+        crop_probs = F.softmax(outputs["crop"], dim=1)
+        growth_probs = F.softmax(outputs["growth"], dim=1)
+        severity_probs = F.softmax(outputs["severity"], dim=1)
+        damaged_prob = torch.sigmoid(outputs["is_damaged"])
+        health_score = torch.sigmoid(outputs["health"])
 
-            crop_idx = torch.argmax(preds["crop"]).item()
-            growth_idx = torch.argmax(preds["growth"]).item()
-            sev_idx = torch.argmax(preds["severity"]).item()
-            damaged_prob = torch.sigmoid(preds["is_damaged"]).item()
-            damaged_label = "Yes" if damaged_prob > 0.5 else "No"
-            health_score = preds["health"].item() * 100
+        crop_pred = torch.argmax(crop_probs, dim=1).item()
+        growth_pred = torch.argmax(growth_probs, dim=1).item()
+        severity_pred = torch.argmax(severity_probs, dim=1).item()
 
-    # ---------------------- DISPLAY RESULTS ----------------------
-    st.markdown("### 🧾 Prediction Results")
-    st.success(f"**Crop Type (index):** {crop_idx}")
-    st.write(f"**Damaged:** {damaged_label} ({damaged_prob:.2f})")
-    st.write(f"**Growth Stage (index):** {growth_idx}")
-    st.write(f"**Severity Level (index):** {sev_idx}")
-    st.write(f"**Health Score:** {health_score:.2f}/100")
+    # -----------------------
+    # 📊 Display Results
+    # -----------------------
+    st.subheader("🧾 Predicted Results:")
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.write(f"**Predicted Crop ID:** {crop_pred}")
+        st.write(f"**Damage Probability:** {damaged_prob.item():.2f}")
+        st.write(f"**Health Score (0-1):** {health_score.item():.2f}")
+
+    with col2:
+        st.write(f"**Growth Stage (ID):** {growth_pred}")
+        st.write(f"**Severity Level (ID):** {severity_pred}")
+
+    st.success("✅ Prediction completed successfully!")
 
 else:
-    st.info("👆 Please upload a crop image to get predictions.")
+    st.info("Please upload a crop image to begin inference.")
