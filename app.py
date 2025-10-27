@@ -13,23 +13,28 @@ st.title("🌾 Crop Condition Prediction App")
 st.write("Upload a crop image to predict its type, damage status, growth stage, severity, and health score.")
 
 # ---------------------- MODEL LOADER ----------------------
+
 @st.cache_resource
 def load_model():
-    model = MultiHeadResNet(
-        backbone_name="resnet34",  # or whatever backbone you used in training
-        pretrained=False
-    ).to(DEVICE)
+    model = MultiHeadResNet(backbone_name=BACKBONE, pretrained=False).to(DEVICE)
+    ckpt = torch.load("clean_model.pth", map_location=DEVICE)
 
-    ckpt = torch.load(CKPT_PATH, map_location=DEVICE)
-    
-    # Handle both raw state_dict and dict with "model_state"
-    if isinstance(ckpt, dict) and "model_state" in ckpt:
-        model.load_state_dict(ckpt["model_state"])
+    # Handle different checkpoint formats
+    if "model_state" in ckpt:
+        state_dict = ckpt["model_state"]
     else:
-        model.load_state_dict(ckpt)
+        state_dict = ckpt
 
+    # Remove 'module.' prefix if model was trained with DataParallel
+    new_state_dict = {}
+    for k, v in state_dict.items():
+        new_state_dict[k.replace("module.", "")] = v
+
+    # Load with strict=False to ignore missing or extra keys
+    model.load_state_dict(new_state_dict, strict=False)
     model.eval()
     return model
+
 
 
 # ---------------------- LOAD MODEL ----------------------
