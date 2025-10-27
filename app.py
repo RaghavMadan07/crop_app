@@ -17,32 +17,49 @@ st.write("Upload a crop image to predict its type, damage status, growth stage, 
 
 @st.cache_resource
 def load_model():
-    BACKBONE = "resnet18"  # or resnet34 / resnet50 depending on what you trained
+    BACKBONE = "resnet18"  # change if you used a different one
     model = MultiHeadResNet(backbone_name=BACKBONE, pretrained=False).to(DEVICE)
 
     ckpt = torch.load(CKPT_PATH, map_location=DEVICE)
 
-    # ✅ If your checkpoint contains only backbone weights
-    if isinstance(ckpt, dict) and "backbone.conv1.weight" in ckpt:
-        new_state_dict = model.state_dict()
-        for k, v in ckpt.items():
-            if k.startswith("backbone."):  # load only matching layers
-                new_state_dict[k] = v
-        model.load_state_dict(new_state_dict, strict=False)
-        print("Loaded backbone weights only (heads initialized randomly).")
+    new_state_dict = model.state_dict()
 
-    # ✅ If checkpoint is nested dict
-    elif isinstance(ckpt, dict) and "model_state" in ckpt:
-        model.load_state_dict(ckpt["model_state"], strict=False)
-        print("Loaded full model_state.")
+    # ✅ Handle all possible checkpoint types
+    if isinstance(ckpt, dict):
+        # case 1: has "model_state"
+        if "model_state" in ckpt:
+            ckpt = ckpt["model_state"]
 
+        # case 2: keys start with "module."
+        if any(k.startswith("module.") for k in ckpt.keys()):
+            ckpt = {k.replace("module.", ""): v for k, v in ckpt.items()}
+
+        # case 3: keys start with "backbone."
+        if any(k.startswith("backbone.") for k in ckpt.keys()):
+            for k, v in ckpt.items():
+                if k in new_state_dict:
+                    new_state_dict[k] = v
+            model.load_state_dict(new_state_dict, strict=False)
+            print("✅ Loaded backbone weights only.")
+            model.eval()
+            return model
+
+        # case 4: direct match
+        try:
+            model.load_state_dict(ckpt, strict=False)
+            print("✅ Loaded checkpoint with partial match.")
+        except RuntimeError as e:
+            print(f"⚠️ Partial load error ignored: {e}")
+            for k, v in ckpt.items():
+                if k in new_state_dict and new_state_dict[k].shape == v.shape:
+                    new_state_dict[k] = v
+            model.load_state_dict(new_state_dict, strict=False)
+            print("✅ Loaded compatible weights only.")
     else:
-        model.load_state_dict(ckpt, strict=False)
-        print("Loaded checkpoint with strict=False.")
+        print("⚠️ Unexpected checkpoint type, loading skipped.")
 
     model.eval()
     return model
-
 
 
 # ---------------------- LOAD MODEL ----------------------
