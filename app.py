@@ -12,15 +12,23 @@ ckpt_path = "best_multitask_model.pth"
 st.title("🌾 Crop Condition Prediction App")
 
 @st.cache_resource
+@st.cache_resource
 def load_model():
     model = MultiHeadResNet(pretrained=False, num_crops=5, num_stages=3, num_severity=4)
     ckpt = torch.load(ckpt_path, map_location=DEVICE)
-    model.load_state_dict(ckpt["model_state"])
+
+    # Handle both formats safely
+    if isinstance(ckpt, dict) and "model_state" in ckpt:
+        model.load_state_dict(ckpt["model_state"])
+        le_crop = ckpt.get("le_crop", None)
+        le_stage = ckpt.get("le_stage", None)
+        le_severity = ckpt.get("le_severity", None)
+    else:
+        model.load_state_dict(ckpt)
+        le_crop = le_stage = le_severity = None
+
     model.to(DEVICE)
     model.eval()
-    le_crop = ckpt["le_crop"]
-    le_stage = ckpt["le_stage"]
-    le_severity = ckpt["le_severity"]
     return model, le_crop, le_stage, le_severity
 
 model, le_crop, le_stage, le_severity = load_model()
