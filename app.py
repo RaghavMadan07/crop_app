@@ -17,22 +17,29 @@ st.write("Upload a crop image to predict its type, damage status, growth stage, 
 
 @st.cache_resource
 def load_model():
+    BACKBONE = "resnet18"  # or resnet34 / resnet50 depending on what you trained
     model = MultiHeadResNet(backbone_name=BACKBONE, pretrained=False).to(DEVICE)
-    ckpt = torch.load("clean_model.pth", map_location=DEVICE)
 
-    # Handle different checkpoint formats
-    if "model_state" in ckpt:
-        state_dict = ckpt["model_state"]
+    ckpt = torch.load(CKPT_PATH, map_location=DEVICE)
+
+    # ✅ If your checkpoint contains only backbone weights
+    if isinstance(ckpt, dict) and "backbone.conv1.weight" in ckpt:
+        new_state_dict = model.state_dict()
+        for k, v in ckpt.items():
+            if k.startswith("backbone."):  # load only matching layers
+                new_state_dict[k] = v
+        model.load_state_dict(new_state_dict, strict=False)
+        print("Loaded backbone weights only (heads initialized randomly).")
+
+    # ✅ If checkpoint is nested dict
+    elif isinstance(ckpt, dict) and "model_state" in ckpt:
+        model.load_state_dict(ckpt["model_state"], strict=False)
+        print("Loaded full model_state.")
+
     else:
-        state_dict = ckpt
+        model.load_state_dict(ckpt, strict=False)
+        print("Loaded checkpoint with strict=False.")
 
-    # Remove 'module.' prefix if model was trained with DataParallel
-    new_state_dict = {}
-    for k, v in state_dict.items():
-        new_state_dict[k.replace("module.", "")] = v
-
-    # Load with strict=False to ignore missing or extra keys
-    model.load_state_dict(new_state_dict, strict=False)
     model.eval()
     return model
 
