@@ -1,58 +1,66 @@
-import streamlit as st
 import torch
-import torch.nn as nn
-from torchvision import transforms
-from PIL import Image
+import streamlit as st
+from model import MultiHeadResNet
 
-# -----------------------
-# Define your model (same as before)
-# -----------------------
-class CropNet(nn.Module):
-    def __init__(self, num_classes=4, num_stages=3, num_severity=3):
-        super(CropNet, self).__init__()
-        self.backbone = torch.hub.load("pytorch/vision:v0.10.0", "resnet18", pretrained=False)
-        in_features = self.backbone.fc.in_features
-        self.backbone.fc = nn.Identity()
-        self.crop_head = nn.Linear(in_features, num_classes)
-        self.stage_head = nn.Linear(in_features, num_stages)
-        self.severity_head = nn.Linear(in_features, num_severity)
-        self.damage_head = nn.Linear(in_features, 1)
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+CKPT_PATH = "clean_model.pth"
 
-    def forward(self, x):
-        features = self.backbone(x)
-        crop_class = self.crop_head(features)
-        stage = self.stage_head(features)
-        severity = self.severity_head(features)
-        damage_prob = torch.sigmoid(self.damage_head(features))
-        return crop_class, stage, severity, damage_prob
-
-
-# -----------------------
-# Load model with cache
-# -----------------------
 @st.cache_resource
 def load_model():
-    model = CropNet(num_classes=4, num_stages=3, num_severity=3)
-    checkpoint = torch.load("clean_model.pth", map_location="cpu")
+    st.write("🔄 Loading model...")
+    model = MultiHeadResNet(backbone_name="resnet50", pretrained=False).to(DEVICE)
+    ckpt = torch.load(CKPT_PATH, map_location=DEVICE)
 
-    if "model_state" in checkpoint:
-        checkpoint = checkpoint["model_state"]
+    # Handle model checkpoints stored as dict
+    if "model_state" in ckpt:
+        state_dict = ckpt["model_state"]
+    else:
+        state_dict = ckpt
 
-    missing, unexpected = model.load_state_dict(checkpoint, strict=False)
-    st.write(f"✅ Model loaded with {len(checkpoint)} layers.")
+    # Filter out mismatched keys safely
+    new_state_dict = {}
+    for k, v in state_dict.items():
+        if k in model.state_dict() and model.state_dict()[k].shape == v.shape:
+            new_state_dict[k] = v
+        else:
+            print(f"Skipping {k} due to mismatch: {v.shape if hasattr(v, 'shape') else 'N/A'}")
+
+    # Load safely
+    missing, unexpected = model.load_state_dict(new_state_dict, strict=False)
+
+    st.write(f"✅ Model loaded successfully with {len(new_state_dict)} matching layers.")
     if missing:
-        st.write(f"⚠️ Missing keys: {missing}")
+        st.warning(f"Missing keys: {missing}")
+    if unexpected:
+        st.warning(f"Unexpected keys: {unexpected}")
+
     model.eval()
     return model
 
+
+# Test load
 model = load_model()
+st.success("🎉 Model initialized and ready for inference!")
+import torch
+from torchvision import transforms
+from PIL import Image
+import streamlit as st
 
 # -----------------------
-# Class labels for better UI
+# User Interface for Prediction
 # -----------------------
-CROP_CLASSES = ["Wheat", "Rice", "Maize", "Cotton"]
-GROWTH_STAGES = ["Early Stage", "Mid Stage", "Mature Stage"]
-SEVERITY_LEVELS = ["Healthy", "Moderate Infection", "Severe Infection"]
+
+st.subheader("📸 Upload a Crop Image")
+
+# Define preprocessing transform
+transform = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                         std=[0.229, 0.224, 0.225])
+])
+
+
 
 # -----------------------
 # Streamlit UI
