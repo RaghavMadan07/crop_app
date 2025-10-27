@@ -7,6 +7,7 @@ from model import MultiHeadResNet  # Make sure this is your CNN model file
 # ---------------------- CONFIG ----------------------
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 CKPT_PATH = "clean_model.pth"
+BACKBONE = "resnet50"  # ✅ define this
 
 st.set_page_config(page_title="Crop Condition Prediction", page_icon="🌾", layout="centered")
 st.title("🌾 Crop Condition Prediction App")
