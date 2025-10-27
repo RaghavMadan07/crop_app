@@ -1,58 +1,58 @@
-import torch
 import streamlit as st
+import torch
+from torchvision import transforms
+from PIL import Image
 from model import MultiHeadResNet
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-CKPT_PATH = "clean_model.pth"
+# ---------------------
+# CONFIGURATION
+# ---------------------
+MODEL_PATH = "clean_model.pth"
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
+# Class label mappings
+CROP_LABELS = [
+    'Cherry', 'Coffee-plant', 'Cucumber', 'Fox_nut(Makhana)', 'Lemon',
+    'Olive-tree', 'Pearl_millet(bajra)', 'Tobacco-plant', 'almond', 'banana',
+    'cardamom', 'chilli', 'clove', 'coconut', 'cotton', 'gram', 'jowar', 'jute',
+    'maize', 'mustard-oil', 'papaya', 'pineapple', 'rice', 'soyabean', 'sugarcane',
+    'sunflower', 'tea', 'tomato', 'vigna-radiati(Mung)', 'wheat'
+]
+GROWTH_LABELS = ['early', 'late', 'mid']
+SEVERITY_LABELS = ['healthy', 'mild', 'moderate', 'severe']
+
+# ---------------------
+# MODEL LOADING
+# ---------------------
 @st.cache_resource
 def load_model():
     st.write("🔄 Loading model...")
-    model = MultiHeadResNet(backbone_name="resnet50", pretrained=False).to(DEVICE)
-    ckpt = torch.load(CKPT_PATH, map_location=DEVICE)
-
-    # Handle model checkpoints stored as dict
+    model = MultiHeadResNet(backbone_name="resnet50", pretrained=False,
+                            num_crops=len(CROP_LABELS),
+                            num_stages=len(GROWTH_LABELS),
+                            num_severity=len(SEVERITY_LABELS))
+    ckpt = torch.load(MODEL_PATH, map_location=DEVICE)
+    
     if "model_state" in ckpt:
         state_dict = ckpt["model_state"]
     else:
         state_dict = ckpt
 
-    # Filter out mismatched keys safely
-    new_state_dict = {}
-    for k, v in state_dict.items():
-        if k in model.state_dict() and model.state_dict()[k].shape == v.shape:
-            new_state_dict[k] = v
-        else:
-            print(f"Skipping {k} due to mismatch: {v.shape if hasattr(v, 'shape') else 'N/A'}")
-
-    # Load safely
-    missing, unexpected = model.load_state_dict(new_state_dict, strict=False)
-
-    st.write(f"✅ Model loaded successfully with {len(new_state_dict)} matching layers.")
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    st.success(f"✅ Model loaded successfully with {len(state_dict)} layers.")
     if missing:
         st.warning(f"Missing keys: {missing}")
     if unexpected:
-        st.warning(f"Unexpected keys: {unexpected}")
-
-    model.eval()
+        st.info(f"Unexpected keys: {unexpected}")
+        
+    model.to(DEVICE).eval()
     return model
 
-
-# Test load
 model = load_model()
-st.success("🎉 Model initialized and ready for inference!")
-import torch
-from torchvision import transforms
-from PIL import Image
-import streamlit as st
 
-# -----------------------
-# User Interface for Prediction
-# -----------------------
-
-st.subheader("📸 Upload a Crop Image")
-
-# Define preprocessing transform
+# ---------------------
+# IMAGE TRANSFORM
+# ---------------------
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
@@ -60,42 +60,45 @@ transform = transforms.Compose([
                          std=[0.229, 0.224, 0.225])
 ])
 
+# ---------------------
+# STREAMLIT UI
+# ---------------------
+st.title("🌱 Crop Condition Classification App")
+st.markdown("Upload a crop image to get predictions for **crop type, growth stage, damage severity, and health**.")
 
-
-# -----------------------
-# Streamlit UI
-# -----------------------
-st.title("🌾 Smart Crop Health Analyzer")
-st.markdown("Upload a **crop field image** to analyze crop type, growth stage, and disease severity.")
-
-uploaded_file = st.file_uploader("📸 Upload Crop Image", type=["jpg", "jpeg", "png"])
+uploaded_file = st.file_uploader("📸 Upload an image", type=["jpg", "jpeg", "png"])
 
 if uploaded_file:
     image = Image.open(uploaded_file).convert("RGB")
-    st.image(image, caption="Uploaded Crop Image", use_container_width=True)
+    st.image(image, caption="Uploaded Image", use_container_width=True)
 
-    # Preprocess
-    transform = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-    ])
-    img_tensor = transform(image).unsqueeze(0)
+    if st.button("🔍 Run Prediction"):
+        st.info("Running model inference...")
 
-    # Inference
-    st.markdown("🔍 **Analyzing image...**")
-    with torch.no_grad():
-        crop_out, stage_out, severity_out, damage_prob = model(img_tensor)
-        crop_idx = crop_out.argmax(1).item()
-        stage_idx = stage_out.argmax(1).item()
-        severity_idx = severity_out.argmax(1).item()
-        damage_score = damage_prob.item()
-        health_score = (1 - damage_score) * 100
+        with torch.no_grad():
+            input_tensor = transform(image).unsqueeze(0).to(DEVICE)
+            output = model(input_tensor)
 
-    # Display
-    st.success("✅ **Prediction complete!**")
-    st.markdown("### 🧾 **Results:**")
-    st.write(f"**Crop Type:** {CROP_CLASSES[crop_idx]}")
-    st.write(f"**Growth Stage:** {GROWTH_STAGES[stage_idx]}")
-    st.write(f"**Disease Severity:** {SEVERITY_LEVELS[severity_idx]}")
-    st.write(f"**Damaged Probability:** {damage_score:.2f}")
-    st.write(f"**Health Score:** {health_score:.2f}/100")
+            # Interpret outputs
+            crop_idx = torch.argmax(output["crop"]).item()
+            growth_idx = torch.argmax(output["growth"]).item()
+            severity_idx = torch.argmax(output["severity"]).item()
+            damaged_prob = torch.sigmoid(output["is_damaged"]).item()
+            health_score = max(0, min(100, 100 * torch.sigmoid(output["health"]).item()))
+
+            # Get readable labels
+            crop_label = CROP_LABELS[crop_idx]
+            growth_label = GROWTH_LABELS[growth_idx]
+            severity_label = SEVERITY_LABELS[severity_idx]
+
+        st.subheader("🧾 Prediction Results")
+        st.write(f"**Crop Type:** {crop_label}")
+        st.write(f"**Growth Stage:** {growth_label}")
+        st.write(f"**Severity Level:** {severity_label}")
+        st.write(f"**Damaged Probability:** {damaged_prob:.2f}")
+        st.write(f"**Health Score:** {health_score:.2f} / 100")
+        st.success("✅ Prediction complete!")
+
+else:
+    st.info("Please upload an image to begin.")
+
