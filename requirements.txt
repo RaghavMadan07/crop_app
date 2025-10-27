@@ -10,3 +10,4 @@ pandas
 Pillow 
 matplotlib 
 tqdm 
+joblib
