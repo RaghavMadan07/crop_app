@@ -11,3 +11,4 @@ Pillow
 matplotlib 
 tqdm 
 joblib
+plotly
