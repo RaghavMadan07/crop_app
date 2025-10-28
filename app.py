@@ -1,153 +1,102 @@
-import streamlit as st
 import torch
-from torchvision import transforms
-from PIL import Image
-import plotly.graph_objects as go
-import torch.nn.functional as F
+import streamlit as st
 from model import MultiHeadResNet
 
-# ----------------------------
-# 🔧 PAGE CONFIGURATION
-# ----------------------------
-st.set_page_config(page_title="🌾 Crop Health Detector", layout="wide")
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+CKPT_PATH = "clean_model.pth"
 
-st.markdown("""
-    <style>
-        .main {
-            background-color: #f6fff8;
-            color: #102a43;
-        }
-        h1, h2, h3 {
-            color: #206a5d;
-        }
-        .stMetric {
-            background-color: #ffffff;
-            border-radius: 10px;
-            padding: 10px;
-        }
-    </style>
-""", unsafe_allow_html=True)
-
-# ----------------------------
-# 🧠 LOAD MODEL
-# ----------------------------
 @st.cache_resource
 def load_model():
-    model = MultiHeadResNet(backbone_name="resnet50", pretrained=False, num_crops=30, num_stages=3, num_severity=4)
-    checkpoint = torch.load("model.pth", map_location="cpu")
-    if "model_state" in checkpoint:
-        checkpoint = checkpoint["model_state"]
-    missing, unexpected = model.load_state_dict(checkpoint, strict=False)
-    st.write(f"✅ Model loaded successfully. Missing keys: {missing}")
+    st.write("🔄 Loading model...")
+    model = MultiHeadResNet(backbone_name="resnet50", pretrained=False).to(DEVICE)
+    ckpt = torch.load(CKPT_PATH, map_location=DEVICE)
+
+    # Handle model checkpoints stored as dict
+    if "model_state" in ckpt:
+        state_dict = ckpt["model_state"]
+    else:
+        state_dict = ckpt
+
+    # Filter out mismatched keys safely
+    new_state_dict = {}
+    for k, v in state_dict.items():
+        if k in model.state_dict() and model.state_dict()[k].shape == v.shape:
+            new_state_dict[k] = v
+        else:
+            print(f"Skipping {k} due to mismatch: {v.shape if hasattr(v, 'shape') else 'N/A'}")
+
+    # Load safely
+    missing, unexpected = model.load_state_dict(new_state_dict, strict=False)
+
+    st.write(f"✅ Model loaded successfully with {len(new_state_dict)} matching layers.")
+    if missing:
+        st.warning(f"Missing keys: {missing}")
+    if unexpected:
+        st.warning(f"Unexpected keys: {unexpected}")
+
     model.eval()
     return model
 
+
+# Test load
 model = load_model()
+st.success("🎉 Model initialized and ready for inference!")
+import torch
+from torchvision import transforms
+from PIL import Image
+import streamlit as st
 
-# ----------------------------
-# 📋 LABELS
-# ----------------------------
-crop_labels = [
-    'Cherry', 'Coffee-plant', 'Cucumber', 'Fox_nut(Makhana)', 'Lemon',
-    'Olive-tree', 'Pearl_millet(bajra)', 'Tobacco-plant', 'almond', 'banana',
-    'cardamom', 'chilli', 'clove', 'coconut', 'cotton', 'gram', 'jowar',
-    'jute', 'maize', 'mustard-oil', 'papaya', 'pineapple', 'rice',
-    'soyabean', 'sugarcane', 'sunflower', 'tea', 'tomato',
-    'vigna-radiati(Mung)', 'wheat'
-]
-growth_labels = ['early', 'late', 'mid']
-severity_labels = ['healthy', 'mild', 'moderate', 'severe']
+# -----------------------
+# User Interface for Prediction
+# -----------------------
 
-# ----------------------------
-# 🖼️ SIDEBAR INFO
-# ----------------------------
-with st.sidebar:
-    st.title("📘 About the Model")
-    st.write("This AI model identifies crop type, growth stage, damage severity, and health score from crop images.")
-    st.markdown("**Model:** Multi-Head ResNet50")
-    st.markdown("**Classes:** 30 Crops | 3 Growth Stages | 4 Severity Levels")
-    st.divider()
-    st.info("💡 Tip: Upload clear daylight crop images for best results!")
+st.subheader("📸 Upload a Crop Image")
 
-# ----------------------------
-# 📸 IMAGE UPLOAD
-# ----------------------------
-st.title("🌾 AI-Powered Crop Health Detection")
-uploaded_file = st.file_uploader("Upload an image of your crop", type=["jpg", "jpeg", "png"])
+# Define preprocessing transform
+transform = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                         std=[0.229, 0.224, 0.225])
+])
 
-if uploaded_file:
+uploaded_file = st.file_uploader("Upload an image of a crop", type=["jpg", "jpeg", "png"])
+
+if uploaded_file is not None:
+    # Load and show the image
     img = Image.open(uploaded_file).convert("RGB")
+    st.image(img, caption="Uploaded Image", use_column_width=True)
 
-    col1, col2 = st.columns([1, 2])
-    with col1:
-        st.image(img, caption="Uploaded Crop Image", use_container_width=True)
+    # Preprocess image
+    input_tensor = transform(img).unsqueeze(0).to("cuda" if torch.cuda.is_available() else "cpu")
 
-    # ----------------------------
-    # 🔄 PREPROCESS & INFERENCE
-    # ----------------------------
-    transform = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                             std=[0.229, 0.224, 0.225])
-    ])
-
-    input_tensor = transform(img).unsqueeze(0)
+    st.write("🔍 Running model inference...")
     with torch.no_grad():
-        output = model(input_tensor)
+        preds = model(input_tensor)
 
-    crop_idx = torch.argmax(output["crop"]).item()
-    growth_idx = torch.argmax(output["growth"]).item()
-    severity_idx = torch.argmax(output["severity"]).item()
-    damaged_prob = torch.sigmoid(output["is_damaged"]).item()
-    health_score = (1 - damaged_prob) * 100 if severity_labels[severity_idx] == "healthy" else (1 - damaged_prob * 0.8) * 100
+        # Apply softmax/sigmoid to get readable outputs
+        crop_probs = torch.softmax(preds["crop"], dim=1)
+        growth_probs = torch.softmax(preds["growth"], dim=1)
+        severity_probs = torch.softmax(preds["severity"], dim=1)
+        damage_prob = torch.sigmoid(preds["is_damaged"]).item()
+        health_score = torch.sigmoid(preds["health"]).item() * 100
 
-    crop_name = crop_labels[crop_idx]
-    growth_stage = growth_labels[growth_idx]
-    severity_label = severity_labels[severity_idx]
+        # Convert to readable outputs
+        crop_idx = torch.argmax(crop_probs).item()
+        growth_idx = torch.argmax(growth_probs).item()
+        severity_idx = torch.argmax(severity_probs).item()
 
-    with col2:
-        st.markdown("### 🧾 Prediction Summary")
-        st.metric("🌱 Crop Type", crop_name)
-        st.metric("🪴 Growth Stage", growth_stage)
-        st.metric("⚠️ Severity Level", severity_label)
-        st.metric("💧 Damage Probability", f"{damaged_prob:.2f}")
-        st.metric("❤️ Health Score", f"{health_score:.2f}/100")
+    # -----------------------
+    # Display predictions
+    # -----------------------
+    st.markdown("### 🧾 Prediction Results")
+    st.write(f"**Crop Class Index:** {crop_idx}")
+    st.write(f"**Growth Stage Index:** {growth_idx}")
+    st.write(f"**Severity Level Index:** {severity_idx}")
+    st.write(f"**Damaged Probability:** {damage_prob:.2f}")
+    st.write(f"**Health Score:** {health_score:.2f}/100")
 
-        # Display health gauge
-        fig = go.Figure(go.Indicator(
-            mode="gauge+number",
-            value=health_score,
-            title={'text': "Health Score"},
-            gauge={
-                'axis': {'range': [0, 100]},
-                'bar': {'color': "green" if health_score > 70 else "orange" if health_score > 40 else "red"},
-                'steps': [
-                    {'range': [0, 40], 'color': "#ffb3b3"},
-                    {'range': [40, 70], 'color': "#ffe680"},
-                    {'range': [70, 100], 'color': "#b3ffb3"}
-                ]
-            }
-        ))
-        st.plotly_chart(fig, use_container_width=True)
+    st.success("✅ Prediction complete!")
 
-        # Severity message
-        if severity_label == "healthy":
-            st.success("✅ Crop is healthy and thriving!")
-        elif severity_label == "mild":
-            st.info("🌤 Mild issues detected — monitor conditions.")
-        elif severity_label == "moderate":
-            st.warning("⚠️ Moderate stress — consider early treatment.")
-        else:
-            st.error("🚨 Severe damage detected! Immediate attention needed.")
-
-# ----------------------------
-# 👣 FOOTER
-# ----------------------------
-st.markdown("""
----
-👨‍💻 **Developed by:** Your Name  
-🚀 **Powered by:** Streamlit & PyTorch  
-🌱 **Model:** Multi-Head ResNet50 | v1.0.0
-""")
-"# redeploy trigger" 
+else:
+    st.info("Please upload an image to begin analysis.")
